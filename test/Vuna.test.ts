@@ -1,64 +1,84 @@
 import { expect } from "chai";
-import { ethers } from "ethers";
-import { Contract, ContractFactory } from "ethers";
-import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
+import * as ethers from "ethers";
+import { Contract, Signer, ContractFactory } from "ethers";
 
 describe("Vuna", function () {
-  let Vuna: ContractFactory;
   let vuna: Contract;
-  let owner: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  let addr2: SignerWithAddress;
-  let addrs: SignerWithAddress[];
-
-  let MockERC20: ContractFactory;
-  let mockToken: Contract;
-  let MockLendingPool: ContractFactory;
   let mockLendingPool: Contract;
-  let MockGelato: ContractFactory;
   let mockGelato: Contract;
+  let mockERC20: Contract;
+  let mockAaveToken: Contract;
+  let owner: Signer;
+  let addr1: Signer;
 
   beforeEach(async function () {
-    // Get the ContractFactory and Signers here.
-    [owner, addr1, addr2, ...addrs] = await ethers.getSigners();
+    [owner, addr1] = await new ethers.getSigners();
 
     // Deploy mock contracts
-    MockERC20 = await ethers.getContractFactory("ERC20Mock");
-    mockToken = await MockERC20.deploy("Mock Token", "MTK");
-    await mockToken.deployed();
+    const MockERC20 = await new ethers.getContractFactory("ERC20Mock");
+    mockERC20 = await MockERC20.deploy("Mock USDC", "mUSDC");
 
-    MockLendingPool = await ethers.getContractFactory("MockLendingPool");
+    const MockAaveToken = await ethers.getContractFactory("MockAaveToken");
+    mockAaveToken = await MockAaveToken.deploy("Mock aUSDC", "maUSDC", ethers.utils.parseEther("1.05"));
+
+    const MockLendingPool = await ethers.getContractFactory("MockLendingPool");
     mockLendingPool = await MockLendingPool.deploy();
-    await mockLendingPool.deployed();
 
-    MockGelato = await ethers.getContractFactory("MockGelato");
+    const MockGelato = await ethers.getContractFactory("MockGelato");
     mockGelato = await MockGelato.deploy();
-    await mockGelato.deployed();
 
-    // Deploy the Vuna contract
-    Vuna = await ethers.getContractFactory("Vuna");
+    // Set up mock lending pool
+    await mockLendingPool.setAToken(mockERC20.address, mockAaveToken.address);
+
+    // Deploy Vuna contract
+    const Vuna = await ethers.getContractFactory("Vuna");
     vuna = await Vuna.deploy(
-      [mockToken.address],
+      [mockERC20.address],
       mockGelato.address,
       mockLendingPool.address
     );
-    await vuna.deployed();
+
+    // Mint some tokens to the owner
+    await mockERC20.mint(await owner.getAddress(), ethers.utils.parseEther("1000"));
   });
 
-  describe("Deployment", function () {
-    it("Should set the right owner", async function () {
-      expect(await vuna.owner()).to.equal(owner.address);
-    });
+  it("Should create a savings goal", async function () {
+    const what = "New Car";
+    const why = "For commuting";
+    const targetAmount = ethers.utils.parseEther("100");
+    const targetDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60; // 1 year from now
 
-    it("Should support the initial deposit token", async function () {
-      const vunaVault = await vuna.vunaVaults(mockToken.address);
-      expect(vunaVault).to.not.equal(ethers.constants.AddressZero);
-    });
+    await vuna.setGoal(what, why, targetAmount, targetDate, mockERC20.address);
 
-    it("Should set the correct lending pool", async function () {
-      expect(await vuna.lendingPool()).to.equal(mockLendingPool.address);
-    });
+    const goalId = 0; // First goal
+    const goal = await vuna.savingsGoals(goalId);
+
+    expect(goal.what).to.equal(what);
+    expect(goal.why).to.equal(why);
+    expect(goal.targetAmount).to.equal(targetAmount);
+    expect(goal.targetDate).to.equal(targetDate);
+    expect(goal.depositToken).to.equal(mockERC20.address);
   });
 
-  // Add more test cases here for other functionalities
+  it("Should deposit funds into a savings goal", async function () {
+    // Create a goal first
+    const targetAmount = ethers.utils.parseEther("100");
+    const targetDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+    await vuna.setGoal("Test Goal", "Test Reason", targetAmount, targetDate, mockERC20.address);
+
+    const goalId = 0;
+    const depositAmount = ethers.utils.parseEther("10");
+
+    // Approve Vuna to spend tokens
+    await mockERC20.approve(vuna.address, depositAmount);
+
+    // Deposit
+    await vuna.deposit(goalId, depositAmount);
+
+    // Check the deposit was successful
+    const goal = await vuna.savingsGoals(goalId);
+    expect(goal.currentAmount).to.equal(depositAmount);
+  });
+
+  // Add more tests here for other functionalities
 });
